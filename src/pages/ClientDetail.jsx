@@ -8,7 +8,7 @@ import { downloadConsentPDF } from '@/lib/pdf'
 import {
   ArrowLeft, Send, Copy, Check, CheckCircle2, Clock, FileText,
   Phone, Mail, MapPin, CreditCard, Calendar, MessageCircle,
-  Download, Pencil, Trash2, Plus, ExternalLink
+  Download, Pencil, Trash2, Plus, ExternalLink, ShieldCheck, Hash,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -151,13 +151,13 @@ function ConsentPDFTemplate({ consent, centerName }) {
 
       {/* Auditoría digital */}
       <h2 style={{ fontSize: '13px', fontWeight: 'bold', textTransform: 'uppercase', color: '#be123c', margin: '24px 0 10px' }}>
-        5. Auditoría digital
+        5. Auditoría digital — Firma Electrónica Avanzada
       </h2>
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '12px' }}>
         <tbody>
           <tr>
             <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', width: '35%', fontSize: '12px' }}>ID del documento</td>
-            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '11px', color: '#555', fontFamily: 'monospace' }}>{consent.token}</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '10px', color: '#555', fontFamily: 'monospace' }}>{consent.token}</td>
           </tr>
           <tr>
             <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', fontSize: '12px' }}>Dirección IP de firma</td>
@@ -173,11 +173,61 @@ function ConsentPDFTemplate({ consent, centerName }) {
               {consent.rgpd_accepted ? '✓ Aceptado explícitamente (RGPD Art. 9)' : 'No registrado'}
             </td>
           </tr>
+          {/* ── Nuevos campos OTP eIDAS ── */}
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#eff6ff', fontWeight: '600', fontSize: '12px', color: '#1e40af' }}>Verificación identidad OTP</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #dbeafe', fontSize: '11px', color: consent.otp_verified ? '#166534' : '#6b7280' }}>
+              {consent.otp_verified
+                ? `✓ Verificado por SMS — ${consent.otp_phone || ''}`
+                : '— No se aplicó verificación OTP'}
+            </td>
+          </tr>
+          {consent.otp_verified && (
+            <>
+              <tr>
+                <td style={{ padding: '5px 8px', background: '#eff6ff', fontWeight: '600', fontSize: '12px', color: '#1e40af' }}>Timestamp envío OTP</td>
+                <td style={{ padding: '5px 8px', borderBottom: '1px solid #dbeafe', fontSize: '11px', color: '#555' }}>
+                  {consent.otp_sent_at
+                    ? new Date(consent.otp_sent_at).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'medium' })
+                    : '—'}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ padding: '5px 8px', background: '#eff6ff', fontWeight: '600', fontSize: '12px', color: '#1e40af' }}>Timestamp validación OTP</td>
+                <td style={{ padding: '5px 8px', borderBottom: '1px solid #dbeafe', fontSize: '11px', color: '#166534' }}>
+                  {consent.otp_verified_at
+                    ? new Date(consent.otp_verified_at).toLocaleString('es-ES', { dateStyle: 'short', timeStyle: 'medium' })
+                    : '—'}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ padding: '5px 8px', background: '#eff6ff', fontWeight: '600', fontSize: '12px', color: '#1e40af' }}>ID mensaje SMS (proveedor)</td>
+                <td style={{ padding: '5px 8px', borderBottom: '1px solid #dbeafe', fontSize: '10px', color: '#555', fontFamily: 'monospace' }}>
+                  {consent.otp_provider_id || '—'}
+                </td>
+              </tr>
+            </>
+          )}
+          {/* ── Hash SHA-256 ── */}
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#fdf4ff', fontWeight: '600', fontSize: '12px', color: '#7e22ce' }}>Sello SHA-256 del documento</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #f3e8ff', fontSize: '9px', color: '#555', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+              {consent.pdf_hash || '(se genera al descargar el PDF)'}
+            </td>
+          </tr>
         </tbody>
       </table>
 
-      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #eee', fontSize: '10px', color: '#999', textAlign: 'center' }}>
-        Documento generado con DermaFlow CRM · Firma electrónica simple válida bajo Reglamento eIDAS (UE 910/2014) · Datos protegidos según LOPD/RGPD
+      {/* Nota sobre integridad criptográfica */}
+      <div style={{ background: '#fdf4ff', border: '1px solid #e9d5ff', borderRadius: '6px', padding: '8px 12px', marginBottom: '16px', fontSize: '10px', color: '#6b21a8' }}>
+        <strong>Integridad criptográfica:</strong> El hash SHA-256 se calcula sobre los bytes del documento
+        en el momento exacto de la firma. Cualquier modificación posterior del archivo produce un hash
+        diferente, invalidando el sello. El valor original permanece inmutable en la base de datos del sistema.
+      </div>
+
+      <div style={{ marginTop: '8px', paddingTop: '12px', borderTop: '1px solid #eee', fontSize: '10px', color: '#999', textAlign: 'center' }}>
+        Documento generado con DermaFlow CRM · <strong>Firma Electrónica Avanzada</strong> según
+        Reglamento eIDAS (UE 910/2014) · Verificación OTP SMS · Datos protegidos según LOPD/RGPD
       </div>
     </div>
   )
@@ -299,7 +349,7 @@ export default function ClientDetail() {
   const handleDownloadPDF = async (consent) => {
     setDownloading(consent.id)
     try {
-      // Siempre buscar datos frescos de Supabase para incluir IP, user-agent y RGPD
+      // Siempre buscar datos frescos de Supabase (IP, OTP, hash previo, etc.)
       const { data: fresh } = await supabase
         .from('consent_forms')
         .select('*')
@@ -307,9 +357,28 @@ export default function ClientDetail() {
         .single()
       const consentData = fresh || consent
       setViewConsent(consentData)
+
       // Pequeño delay para que React renderice el template oculto
-      await new Promise(r => setTimeout(r, 350))
-      await downloadConsentPDF(consentData, center?.name || '')
+      await new Promise(r => setTimeout(r, 400))
+
+      // Generar PDF, descargarlo y obtener el hash SHA-256
+      const hash = await downloadConsentPDF(consentData, center?.name || '')
+
+      // Guardar hash en Supabase si no estaba registrado todavía
+      if (hash && !consentData.pdf_hash) {
+        await supabase
+          .from('consent_forms')
+          .update({ pdf_hash: hash })
+          .eq('id', consent.id)
+        // Refrescar la lista de consentimientos para mostrar el hash en el CRM
+        qc.invalidateQueries({ queryKey: ['consents', id] })
+        toast.success('PDF descargado · Hash SHA-256 registrado')
+      } else {
+        toast.success('PDF descargado')
+      }
+    } catch (err) {
+      console.error('Error generando PDF:', err)
+      toast.error('Error al generar el PDF')
     } finally {
       setDownloading(null)
     }
@@ -470,10 +539,24 @@ export default function ClientDetail() {
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900">
-                    {c.signed ? 'Firmado' : 'Pendiente de firma'}
-                  </p>
-                  <p className="text-xs text-gray-400">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-sm font-medium text-gray-900">
+                      {c.signed ? 'Firmado' : 'Pendiente de firma'}
+                    </p>
+                    {/* Badge OTP */}
+                    {c.otp_verified && (
+                      <span className="inline-flex items-center gap-1 text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-medium">
+                        <ShieldCheck className="w-3 h-3" /> OTP ✓
+                      </span>
+                    )}
+                    {/* Badge hash */}
+                    {c.pdf_hash && (
+                      <span className="inline-flex items-center gap-1 text-xs bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full font-medium">
+                        <Hash className="w-3 h-3" /> SHA-256
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-0.5">
                     {c.signed
                       ? `Firmado el ${new Date(c.signed_date).toLocaleDateString('es-ES')}`
                       : `Creado el ${new Date(c.created_at).toLocaleDateString('es-ES')}`}

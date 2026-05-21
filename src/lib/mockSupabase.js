@@ -38,6 +38,10 @@ function seed() {
       medications: 'Ninguno', pregnant_or_breastfeeding: false, previous_treatments: false,
       previous_treatments_details: '', signature_data: null,
       ip_address: '93.188.45.12', user_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)', rgpd_accepted: true,
+      // Campos Firma Electrónica Avanzada eIDAS (OTP + SHA-256)
+      otp_verified: true, otp_verified_at: '2026-03-10T11:29:45Z',
+      otp_phone: '+34654321987', otp_provider_id: 'SM_demo_ana_001', otp_sent_at: '2026-03-10T11:29:00Z',
+      pdf_hash: 'a3f8c2e1d4b7f09621c85e3a917d6b40f2e8c1a95d3f7b206e4c8a1d5f9b3e7c',
       signed: true, signed_date: '2026-03-10T11:30:00Z', created_at: '2026-03-01T09:00:00Z',
     },
     {
@@ -49,9 +53,16 @@ function seed() {
       medications: '', pregnant_or_breastfeeding: false, previous_treatments: false,
       previous_treatments_details: '', signature_data: null,
       ip_address: null, user_agent: null, rgpd_accepted: false,
+      // Sin OTP ni hash (aún no firmado)
+      otp_verified: false, otp_verified_at: null,
+      otp_phone: null, otp_provider_id: null, otp_sent_at: null,
+      pdf_hash: null,
       signed: false, signed_date: null, created_at: '2026-03-20T10:00:00Z',
     },
   ])
+
+  // Tabla de registros OTP (vacía en seed — se crea en tiempo real)
+  setTable('consent_otp', [])
 
   localStorage.setItem('dermaflow_seeded', '1')
 }
@@ -100,26 +111,39 @@ const mockAuth = {
 
 class QB {
   constructor(table) {
-    this._t       = table
-    this._mode    = null
-    this._filters = []
-    this._data    = null
+    this._t        = table
+    this._mode     = null
+    this._filters  = []
+    this._data     = null
     this._orderCol = null
     this._orderAsc = true
-    this._single  = false
+    this._single   = false
+    this._maybe    = false
+    this._limit    = null
   }
 
-  select()        { this._mode = 'select';                       return this }
-  insert(data)    { this._mode = 'insert'; this._data = data;    return this }
-  update(data)    { this._mode = 'update'; this._data = data;    return this }
-  delete()        { this._mode = 'delete';                       return this }
-  eq(col, val)    { this._filters.push({ col, val });            return this }
-  order(col, o={}) { this._orderCol = col; this._orderAsc = o.ascending !== false; return this }
-  single()        { this._single = true;                         return this }
+  select()          { this._mode = 'select';                       return this }
+  insert(data)      { this._mode = 'insert'; this._data = data;    return this }
+  update(data)      { this._mode = 'update'; this._data = data;    return this }
+  delete()          { this._mode = 'delete';                       return this }
+  eq(col, val)      { this._filters.push({ op: 'eq',  col, val }); return this }
+  gt(col, val)      { this._filters.push({ op: 'gt',  col, val }); return this }
+  lt(col, val)      { this._filters.push({ op: 'lt',  col, val }); return this }
+  limit(n)          { this._limit = n;                              return this }
+  order(col, o={})  { this._orderCol = col; this._orderAsc = o.ascending !== false; return this }
+  single()          { this._single = true;                         return this }
+  maybeSingle()     { this._single = true; this._maybe = true;     return this }
 
-  then(res, rej)  { return this._run().then(res, rej) }
+  then(res, rej)    { return this._run().then(res, rej) }
 
-  _match(row)     { return this._filters.every(f => row[f.col] === f.val) }
+  _match(row) {
+    return this._filters.every(f => {
+      if (f.op === 'eq')  return row[f.col] === f.val
+      if (f.op === 'gt')  return row[f.col] > f.val
+      if (f.op === 'lt')  return row[f.col] < f.val
+      return true
+    })
+  }
 
   _sort(rows) {
     if (!this._orderCol) return rows
@@ -136,9 +160,15 @@ class QB {
 
     // ── SELECT ────────────────────────────────────────────────────────────────
     if (this._mode === 'select') {
-      const result = this._sort(rows.filter(r => this._match(r)))
+      let result = this._sort(rows.filter(r => this._match(r)))
+      if (this._limit !== null) result = result.slice(0, this._limit)
       if (this._single) {
-        if (!result.length) return { data: null, error: { message: 'Not found' } }
+        if (!result.length) {
+          // maybeSingle devuelve null sin error; single devuelve error
+          return this._maybe
+            ? { data: null, error: null }
+            : { data: null, error: { message: 'Not found' } }
+        }
         return { data: result[0], error: null }
       }
       return { data: result, error: null }
