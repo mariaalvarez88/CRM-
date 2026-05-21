@@ -162,13 +162,13 @@ export default function ConsentForm() {
       setSubmitError('Error al enviar el formulario. Inténtalo de nuevo.')
       setSubmitting(false)
     } else {
-      // Enviar email de confirmación (opcional, requiere VITE_RESEND_API_KEY)
+      // Enviar email de confirmación si hay email
       if (form.client_email) {
-        sendConsentConfirmation({
+        await sendConsentConfirmation({
           clientEmail: form.client_email,
           clientName: form.client_name,
           treatmentType: form.treatment_type,
-          centerName: consent?.center_name || '',
+          centerName: '',
           signedDate: now,
         })
       }
