@@ -298,12 +298,21 @@ export default function ClientDetail() {
 
   const handleDownloadPDF = async (consent) => {
     setDownloading(consent.id)
-    setViewConsent(consent)
-    // Small delay to let React render the hidden template
-    setTimeout(async () => {
-      await downloadConsentPDF(consent, center?.name || '')
+    try {
+      // Siempre buscar datos frescos de Supabase para incluir IP, user-agent y RGPD
+      const { data: fresh } = await supabase
+        .from('consent_forms')
+        .select('*')
+        .eq('id', consent.id)
+        .single()
+      const consentData = fresh || consent
+      setViewConsent(consentData)
+      // Pequeño delay para que React renderice el template oculto
+      await new Promise(r => setTimeout(r, 350))
+      await downloadConsentPDF(consentData, center?.name || '')
+    } finally {
       setDownloading(null)
-    }, 300)
+    }
   }
 
   if (isLoading) {
