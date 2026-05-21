@@ -144,12 +144,40 @@ function ConsentPDFTemplate({ consent, centerName }) {
         <div style={{ flex: 1 }}>
           <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#666' }}>Fecha y hora de firma:</p>
           <p style={{ margin: '0 0 4px', fontWeight: '600' }}>{signedDate}</p>
-          <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>✓ Consentimiento firmado digitalmente</p>
+          <p style={{ margin: '0 0 4px', fontSize: '11px', color: '#388' }}>✓ Consentimiento RGPD aceptado</p>
+          <p style={{ margin: 0, fontSize: '11px', color: '#888' }}>✓ Firma digital registrada</p>
         </div>
       </div>
 
-      <div style={{ marginTop: '32px', paddingTop: '12px', borderTop: '1px solid #eee', fontSize: '10px', color: '#999', textAlign: 'center' }}>
-        Documento generado con DermaFlow CRM · Los datos están protegidos según la LOPD/RGPD
+      {/* Auditoría digital */}
+      <h2 style={{ fontSize: '13px', fontWeight: 'bold', textTransform: 'uppercase', color: '#be123c', margin: '24px 0 10px' }}>
+        5. Auditoría digital
+      </h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
+        <tbody>
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', width: '35%', fontSize: '12px' }}>ID del documento</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '11px', color: '#555', fontFamily: 'monospace' }}>{consent.token}</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', fontSize: '12px' }}>Dirección IP de firma</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '11px', color: '#555' }}>{consent.ip_address || 'No registrada'}</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', fontSize: '12px' }}>Dispositivo / Navegador</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '10px', color: '#555', wordBreak: 'break-word' }}>{consent.user_agent || '—'}</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', fontSize: '12px' }}>Consentimiento RGPD</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '11px', color: consent.rgpd_accepted ? '#166534' : '#991b1b' }}>
+              {consent.rgpd_accepted ? '✓ Aceptado explícitamente (RGPD Art. 9)' : 'No registrado'}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #eee', fontSize: '10px', color: '#999', textAlign: 'center' }}>
+        Documento generado con DermaFlow CRM · Firma electrónica simple válida bajo Reglamento eIDAS (UE 910/2014) · Datos protegidos según LOPD/RGPD
       </div>
     </div>
   )

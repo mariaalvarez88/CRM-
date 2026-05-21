@@ -37,6 +37,7 @@ function seed() {
       treatment_type: 'cejas', allergies: 'Ninguna', medical_conditions: 'Ninguna',
       medications: 'Ninguno', pregnant_or_breastfeeding: false, previous_treatments: false,
       previous_treatments_details: '', signature_data: null,
+      ip_address: '93.188.45.12', user_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)', rgpd_accepted: true,
       signed: true, signed_date: '2026-03-10T11:30:00Z', created_at: '2026-03-01T09:00:00Z',
     },
     {
@@ -47,6 +48,7 @@ function seed() {
       treatment_type: 'labios', allergies: '', medical_conditions: '',
       medications: '', pregnant_or_breastfeeding: false, previous_treatments: false,
       previous_treatments_details: '', signature_data: null,
+      ip_address: null, user_agent: null, rgpd_accepted: false,
       signed: false, signed_date: null, created_at: '2026-03-20T10:00:00Z',
     },
   ])

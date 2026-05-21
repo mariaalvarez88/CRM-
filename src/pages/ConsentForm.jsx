@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
+import { sendConsentConfirmation } from '@/lib/email'
 import SignaturePad from '@/components/SignaturePad'
-import { Sparkles, CheckCircle2, Loader2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { Sparkles, CheckCircle2, Loader2, AlertCircle, ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react'
 
 const TREATMENT_LABELS = {
   cejas: 'Cejas', labios: 'Labios', eyeliner: 'Eyeliner',
@@ -40,6 +41,23 @@ function Field({ label, required, children }) {
   )
 }
 
+function Checkbox({ checked, onChange, children }) {
+  return (
+    <label className="flex items-start gap-3 cursor-pointer" onClick={onChange}>
+      <div className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-colors ${
+        checked ? 'bg-rose-500 border-rose-500' : 'border-gray-300 bg-white'
+      }`}>
+        {checked && (
+          <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 12 12" fill="none">
+            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+      </div>
+      <span className="text-sm text-gray-700 pt-0.5">{children}</span>
+    </label>
+  )
+}
+
 const INPUT = 'w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-rose-300 focus:border-rose-400 bg-white text-gray-900'
 const TEXTAREA = `${INPUT} resize-none`
 
@@ -53,6 +71,8 @@ export default function ConsentForm() {
   const [submitError, setSubmitError] = useState(null)
   const [legalOpen, setLegalOpen] = useState(false)
   const [signature, setSignature] = useState(null)
+  const [clientIP, setClientIP] = useState('')
+  const [rgpdAccepted, setRgpdAccepted] = useState(false)
 
   const [form, setForm] = useState({
     client_name: '', client_dni: '', client_birth_date: '', client_phone: '',
@@ -62,6 +82,15 @@ export default function ConsentForm() {
     previous_treatments_details: '',
   })
 
+  // Obtener IP del cliente para la auditoría del consentimiento
+  useEffect(() => {
+    fetch('https://api.ipify.org?format=json')
+      .then(r => r.json())
+      .then(d => setClientIP(d.ip || ''))
+      .catch(() => {})
+  }, [])
+
+  // Cargar datos del consentimiento
   useEffect(() => {
     async function fetchConsent() {
       const { data, error: err } = await supabase
@@ -99,6 +128,10 @@ export default function ConsentForm() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (!rgpdAccepted) {
+      setSubmitError('Debes aceptar el tratamiento de datos personales y de salud para continuar.')
+      return
+    }
     if (!signature) {
       setSubmitError('Por favor, firma el documento antes de enviarlo.')
       return
@@ -107,9 +140,11 @@ export default function ConsentForm() {
       setSubmitError('Por favor, completa los campos obligatorios (nombre y DNI).')
       return
     }
+
     setSubmitting(true)
     setSubmitError(null)
     const now = new Date().toISOString()
+
     const { error: err } = await supabase
       .from('consent_forms')
       .update({
@@ -117,6 +152,9 @@ export default function ConsentForm() {
         signature_data: signature,
         signed: true,
         signed_date: now,
+        ip_address: clientIP || null,
+        user_agent: navigator.userAgent || null,
+        rgpd_accepted: true,
       })
       .eq('token', token)
 
@@ -124,6 +162,16 @@ export default function ConsentForm() {
       setSubmitError('Error al enviar el formulario. Inténtalo de nuevo.')
       setSubmitting(false)
     } else {
+      // Enviar email de confirmación (opcional, requiere VITE_RESEND_API_KEY)
+      if (form.client_email) {
+        sendConsentConfirmation({
+          clientEmail: form.client_email,
+          clientName: form.client_name,
+          treatmentType: form.treatment_type,
+          centerName: consent?.center_name || '',
+          signedDate: now,
+        })
+      }
       setSubmitted(true)
     }
   }
@@ -140,7 +188,7 @@ export default function ConsentForm() {
     )
   }
 
-  // ── Error — invalid token ────────────────────────────────────────────────────
+  // ── Error — token inválido ───────────────────────────────────────────────────
   if (error || !consent) {
     return (
       <div className="min-h-screen bg-rose-50 flex items-center justify-center p-4">
@@ -155,7 +203,7 @@ export default function ConsentForm() {
     )
   }
 
-  // ── Already signed ───────────────────────────────────────────────────────────
+  // ── Ya firmado ───────────────────────────────────────────────────────────────
   if (consent.signed || submitted) {
     return (
       <div className="min-h-screen bg-rose-50 flex items-center justify-center p-4">
@@ -172,12 +220,19 @@ export default function ConsentForm() {
               Firmado el {new Date(consent.signed_date).toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}
             </p>
           )}
+          {form.client_email && (
+            <p className="text-xs text-gray-400 mt-1">
+              Se ha enviado un email de confirmación a {form.client_email}
+            </p>
+          )}
         </div>
       </div>
     )
   }
 
-  // ── Main form ────────────────────────────────────────────────────────────────
+  // ── Formulario principal ─────────────────────────────────────────────────────
+  const canSubmit = !submitting && !!signature && form.client_name.trim() && form.client_dni.trim() && rgpdAccepted
+
   return (
     <div className="min-h-screen bg-[#f9f5f5]">
       {/* Header */}
@@ -195,7 +250,8 @@ export default function ConsentForm() {
       </div>
 
       <form onSubmit={handleSubmit} className="max-w-xl mx-auto px-4 py-6 space-y-4 pb-10">
-        {/* Legal text (collapsible) */}
+
+        {/* Info del tratamiento (colapsable) */}
         <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
           <button
             type="button"
@@ -223,7 +279,7 @@ export default function ConsentForm() {
           )}
         </div>
 
-        {/* 1. Personal data */}
+        {/* 1. Datos personales */}
         <Section title="Datos personales" number="1">
           <div className="space-y-4">
             <Field label="Nombre completo" required>
@@ -254,14 +310,10 @@ export default function ConsentForm() {
           </div>
         </Section>
 
-        {/* 2. Treatment */}
+        {/* 2. Tratamiento */}
         <Section title="Tratamiento" number="2">
           <Field label="Tipo de tratamiento">
-            <select
-              className={INPUT}
-              value={form.treatment_type}
-              onChange={(e) => set('treatment_type', e.target.value)}
-            >
+            <select className={INPUT} value={form.treatment_type} onChange={(e) => set('treatment_type', e.target.value)}>
               <option value="">Selecciona el tratamiento</option>
               {TREATMENTS.map((t) => (
                 <option key={t.value} value={t.value}>{t.label}</option>
@@ -270,105 +322,65 @@ export default function ConsentForm() {
           </Field>
         </Section>
 
-        {/* 3. Medical info */}
+        {/* 3. Información médica */}
         <Section title="Información médica" number="3">
           <div className="space-y-4">
             <Field label="¿Tienes alguna alergia conocida?">
-              <textarea
-                className={TEXTAREA}
-                rows={2}
-                value={form.allergies}
-                onChange={(e) => set('allergies', e.target.value)}
-                placeholder="Escribe 'Ninguna' si no tienes alergias"
-              />
+              <textarea className={TEXTAREA} rows={2} value={form.allergies} onChange={(e) => set('allergies', e.target.value)} placeholder="Escribe 'Ninguna' si no tienes alergias" />
             </Field>
 
             <Field label="¿Padeces alguna enfermedad o condición médica?">
-              <textarea
-                className={TEXTAREA}
-                rows={2}
-                value={form.medical_conditions}
-                onChange={(e) => set('medical_conditions', e.target.value)}
-                placeholder="Ej: diabetes, problemas de coagulación... o 'Ninguna'"
-              />
+              <textarea className={TEXTAREA} rows={2} value={form.medical_conditions} onChange={(e) => set('medical_conditions', e.target.value)} placeholder="Ej: diabetes, problemas de coagulación... o 'Ninguna'" />
             </Field>
 
             <Field label="¿Tomas algún medicamento actualmente?">
-              <textarea
-                className={TEXTAREA}
-                rows={2}
-                value={form.medications}
-                onChange={(e) => set('medications', e.target.value)}
-                placeholder="Lista de medicamentos o 'Ninguno'"
-              />
+              <textarea className={TEXTAREA} rows={2} value={form.medications} onChange={(e) => set('medications', e.target.value)} placeholder="Lista de medicamentos o 'Ninguno'" />
             </Field>
 
-            {/* Checkboxes */}
             <div className="space-y-3">
-              <label className="flex items-start gap-3 cursor-pointer">
-                <div
-                  onClick={() => set('pregnant_or_breastfeeding', !form.pregnant_or_breastfeeding)}
-                  className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5 cursor-pointer transition-colors ${
-                    form.pregnant_or_breastfeeding
-                      ? 'bg-rose-500 border-rose-500'
-                      : 'border-gray-300 bg-white'
-                  }`}
-                >
-                  {form.pregnant_or_breastfeeding && (
-                    <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 12 12" fill="none">
-                      <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
-                </div>
-                <span className="text-sm text-gray-700 pt-0.5">Estoy embarazada o en periodo de lactancia</span>
-              </label>
+              <Checkbox checked={form.pregnant_or_breastfeeding} onChange={() => set('pregnant_or_breastfeeding', !form.pregnant_or_breastfeeding)}>
+                Estoy embarazada o en periodo de lactancia
+              </Checkbox>
 
-              <label className="flex items-start gap-3 cursor-pointer">
-                <div
-                  onClick={() => set('previous_treatments', !form.previous_treatments)}
-                  className={`w-6 h-6 rounded-lg border-2 flex items-center justify-center flex-shrink-0 mt-0.5 cursor-pointer transition-colors ${
-                    form.previous_treatments
-                      ? 'bg-rose-500 border-rose-500'
-                      : 'border-gray-300 bg-white'
-                  }`}
-                >
-                  {form.previous_treatments && (
-                    <svg className="w-3.5 h-3.5 text-white" viewBox="0 0 12 12" fill="none">
-                      <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
-                </div>
-                <span className="text-sm text-gray-700 pt-0.5">He tenido tratamientos de micropigmentación anteriores</span>
-              </label>
+              <Checkbox checked={form.previous_treatments} onChange={() => set('previous_treatments', !form.previous_treatments)}>
+                He tenido tratamientos de micropigmentación anteriores
+              </Checkbox>
 
               {form.previous_treatments && (
                 <div className="pl-9">
-                  <textarea
-                    className={TEXTAREA}
-                    rows={2}
-                    value={form.previous_treatments_details}
-                    onChange={(e) => set('previous_treatments_details', e.target.value)}
-                    placeholder="Describe los tratamientos previos..."
-                  />
+                  <textarea className={TEXTAREA} rows={2} value={form.previous_treatments_details} onChange={(e) => set('previous_treatments_details', e.target.value)} placeholder="Describe los tratamientos previos..." />
                 </div>
               )}
             </div>
           </div>
         </Section>
 
-        {/* 4. Declaration */}
+        {/* 4. Declaración */}
         <div className="bg-rose-50 rounded-2xl border border-rose-100 p-5 text-xs text-gray-600 leading-relaxed">
           <p>
-            <strong className="text-rose-700">Declaración:</strong> Declaro que he sido informada de forma comprensible sobre el procedimiento de micropigmentación, sus posibles riesgos y complicaciones, así como los cuidados necesarios. He tenido la oportunidad de hacer preguntas y todas han sido respondidas a mi satisfacción. <strong>Autorizo voluntariamente la realización del tratamiento descrito.</strong>
+            <strong className="text-rose-700">Declaración:</strong> Declaro que he sido informada de forma comprensible sobre el procedimiento de micropigmentación, sus posibles riesgos y complicaciones, así como los cuidados necesarios antes y después del tratamiento. He tenido la oportunidad de hacer preguntas y todas han sido respondidas a mi satisfacción. <strong>Autorizo voluntariamente la realización del tratamiento descrito.</strong> Soy consciente de que puedo revocar este consentimiento en cualquier momento antes del inicio del tratamiento.
           </p>
         </div>
 
-        {/* 5. Signature */}
+        {/* 5. Consentimiento RGPD — OBLIGATORIO */}
+        <div className="bg-blue-50 rounded-2xl border border-blue-200 p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <ShieldCheck className="w-4 h-4 text-blue-600 flex-shrink-0" />
+            <span className="text-sm font-semibold text-blue-800">Protección de datos (RGPD) <span className="text-rose-500">*</span></span>
+          </div>
+          <Checkbox checked={rgpdAccepted} onChange={() => setRgpdAccepted(!rgpdAccepted)}>
+            <span>
+              Autorizo el tratamiento de mis <strong>datos personales y de salud</strong> (categoría especial según RGPD Art. 9) por el responsable del centro, con la finalidad exclusiva de la prestación del servicio de micropigmentación. Conozco mis derechos de acceso, rectificación, supresión, portabilidad y oposición, ejercitables contactando con el profesional. Los datos se conservarán durante el tiempo legalmente necesario.
+            </span>
+          </Checkbox>
+        </div>
+
+        {/* 6. Firma */}
         <Section title="Tu firma" number="4">
           <SignaturePad onChange={setSignature} />
         </Section>
 
-        {/* Error message */}
+        {/* Error */}
         {submitError && (
           <div className="flex items-center gap-2.5 p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
@@ -376,10 +388,10 @@ export default function ConsentForm() {
           </div>
         )}
 
-        {/* Submit button */}
+        {/* Botón de envío */}
         <button
           type="submit"
-          disabled={submitting || !signature || !form.client_name.trim() || !form.client_dni.trim()}
+          disabled={!canSubmit}
           className="w-full py-4 bg-rose-500 hover:bg-rose-600 text-white font-semibold rounded-2xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-base shadow-sm shadow-rose-200 flex items-center justify-center gap-2"
         >
           {submitting ? (
