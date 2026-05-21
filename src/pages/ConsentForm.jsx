@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase, IS_MOCK } from '@/lib/supabase'
 import { sendConsentConfirmation } from '@/lib/email'
+import { generateAndHashPDF } from '@/lib/pdf'
 import SignaturePad from '@/components/SignaturePad'
 import OTPVerification from '@/components/OTPVerification'
 import {
@@ -101,6 +102,8 @@ export default function ConsentForm() {
   // Pasos: 'form' → 'sending_otp' → 'otp' → 'signing' → (submitted)
   const [step,          setStep]          = useState('form')
   const [otpPhone,      setOtpPhone]      = useState('')  // teléfono enmascarado
+  const [otpMeta,       setOtpMeta]       = useState(null) // metadatos OTP para el PDF
+  const [viewConsent,   setViewConsent]   = useState(null) // datos para la plantilla PDF oculta
 
   const [form, setForm] = useState({
     client_name:                 '',
@@ -233,7 +236,13 @@ export default function ConsentForm() {
       if (code !== '123456') {
         throw new Error('Código incorrecto (modo demo: usa 123456)')
       }
-      await handleSign()
+      const mockMeta = {
+        verified_at: new Date().toISOString(),
+        phone:       form.client_phone || '+34 600 000 000',
+        message_id:  'demo-mode',
+      }
+      setOtpMeta(mockMeta)
+      await handleSign(mockMeta)
       return
     }
 
@@ -253,13 +262,20 @@ export default function ConsentForm() {
       throw new Error(data.error || 'Código incorrecto. Inténtalo de nuevo.')
     }
 
+    // Guardar metadatos OTP para incluirlos en el PDF
+    setOtpMeta({
+      verified_at: data.verified_at,
+      phone:       data.phone,
+      message_id:  data.message_id,
+    })
+
     // OTP correcto → proceder a firmar
-    await handleSign()
+    await handleSign(data)
   }
 
-  // ── PASO 3: Guardar firma en Supabase ────────────────────────────────────
+  // ── PASO 3: Guardar firma en Supabase + generar PDF + enviar email ─────────
 
-  const handleSign = async () => {
+  const handleSign = async (otpData = null) => {
     setStep('signing')
     const now = new Date().toISOString()
 
@@ -283,15 +299,66 @@ export default function ConsentForm() {
         throw new Error('Error al guardar el consentimiento. Inténtalo de nuevo.')
       }
 
-      // Enviar email de confirmación (no bloqueante)
+      // Construir objeto consent para la plantilla PDF con todos los datos disponibles
+      const meta    = otpData || otpMeta
+      const consentForPDF = {
+        ...form,
+        token,
+        signature_data:   signature,
+        signed:           true,
+        signed_date:      now,
+        ip_address:       clientIP || null,
+        user_agent:       navigator.userAgent || null,
+        rgpd_accepted:    true,
+        otp_verified:     !!meta,
+        otp_verified_at:  meta?.verified_at  || null,
+        otp_phone:        meta?.phone        || null,
+        otp_provider_id:  meta?.message_id   || null,
+        otp_sent_at:      null,
+        pdf_hash:         null, // se calculará durante la generación
+      }
+
+      // Mostrar plantilla oculta para que html2canvas pueda renderizarla
+      setViewConsent(consentForPDF)
+
+      // Enviar email con PDF adjunto si hay dirección de email
       if (form.client_email) {
-        sendConsentConfirmation({
-          clientEmail:   form.client_email,
-          clientName:    form.client_name,
-          treatmentType: form.treatment_type,
-          centerName:    '',
-          signedDate:    now,
-        }).catch(e => console.warn('Email no enviado:', e))
+        // Esperar a que React renderice la plantilla en el DOM
+        await new Promise(r => setTimeout(r, 450))
+
+        try {
+          const { pdfBytes } = await generateAndHashPDF(consentForPDF, '')
+
+          // Convertir Uint8Array → base64
+          let binary = ''
+          for (let i = 0; i < pdfBytes.length; i++) {
+            binary += String.fromCharCode(pdfBytes[i])
+          }
+          const pdfBase64   = btoa(binary)
+          const safeName    = form.client_name.replace(/\s+/g, '_').toLowerCase()
+          const pdfFilename = `consentimiento_${safeName}_${now.slice(0, 10)}.pdf`
+
+          await sendConsentConfirmation({
+            clientEmail:   form.client_email,
+            clientName:    form.client_name,
+            treatmentType: form.treatment_type,
+            centerName:    '',
+            signedDate:    now,
+            pdfBase64,
+            pdfFilename,
+          })
+        } catch (pdfErr) {
+          // El PDF falla silenciosamente — la firma ya está guardada
+          console.warn('No se pudo generar/enviar el PDF adjunto:', pdfErr)
+          // Intentar enviar email sin adjunto como fallback
+          sendConsentConfirmation({
+            clientEmail:   form.client_email,
+            clientName:    form.client_name,
+            treatmentType: form.treatment_type,
+            centerName:    '',
+            signedDate:    now,
+          }).catch(() => {})
+        }
       }
 
       setSubmitted(true)
@@ -705,6 +772,109 @@ export default function ConsentForm() {
           Firma electrónica avanzada · eIDAS UE 910/2014
         </p>
       </form>
+
+      {/* Plantilla PDF oculta — se renderiza brevemente para generar el PDF adjunto */}
+      <ConsentPDFTemplate consent={viewConsent} />
+    </div>
+  )
+}
+
+// ── Plantilla PDF (renderizada fuera de pantalla para html2canvas) ────────────
+
+const TREATMENT_LABELS_PDF = {
+  cejas: 'Cejas', labios: 'Labios', eyeliner: 'Eyeliner',
+  areola: 'Areola', capilar: 'Capilar', otro: 'Otro',
+}
+
+function ConsentPDFTemplate({ consent }) {
+  if (!consent) return null
+  const signedDate = consent.signed_date
+    ? new Date(consent.signed_date).toLocaleString('es-ES', { dateStyle: 'long', timeStyle: 'short' })
+    : ''
+
+  return (
+    <div
+      id="consent-pdf-template"
+      style={{ display: 'none', width: '794px', background: '#fff', padding: '48px', fontFamily: 'Arial, sans-serif', color: '#111', fontSize: '13px', lineHeight: '1.5' }}
+    >
+      <div style={{ borderBottom: '2px solid #e11d48', paddingBottom: '16px', marginBottom: '24px' }}>
+        <h1 style={{ fontSize: '18px', fontWeight: 'bold', margin: 0, color: '#be123c' }}>
+          CONSENTIMIENTO INFORMADO PARA TRATAMIENTO DE MICROPIGMENTACIÓN
+        </h1>
+        <p style={{ margin: '4px 0 0', color: '#666' }}>Fecha: {signedDate}</p>
+      </div>
+
+      <h2 style={{ fontSize: '13px', fontWeight: 'bold', textTransform: 'uppercase', color: '#be123c', margin: '0 0 10px' }}>1. Datos de la paciente</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
+        <tbody>
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', width: '30%' }}>Nombre completo</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.client_name || '—'}</td>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', width: '20%' }}>DNI / NIF</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.client_dni || '—'}</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600' }}>Fecha nacimiento</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.client_birth_date || '—'}</td>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600' }}>Teléfono</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.client_phone || '—'}</td>
+          </tr>
+          <tr>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600' }}>Email</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.client_email || '—'}</td>
+            <td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600' }}>Tratamiento</td>
+            <td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{TREATMENT_LABELS_PDF[consent.treatment_type] || consent.treatment_type || '—'}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 style={{ fontSize: '13px', fontWeight: 'bold', textTransform: 'uppercase', color: '#be123c', margin: '0 0 10px' }}>2. Información médica</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
+        <tbody>
+          <tr><td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', width: '35%' }}>Alergias</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.allergies || 'Ninguna'}</td></tr>
+          <tr><td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600' }}>Condiciones médicas</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.medical_conditions || 'Ninguna'}</td></tr>
+          <tr><td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600' }}>Medicamentos</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.medications || 'Ninguno'}</td></tr>
+          <tr><td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600' }}>Embarazo/lactancia</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.pregnant_or_breastfeeding ? 'SÍ' : 'No'}</td></tr>
+          <tr><td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600' }}>Tratamientos previos</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #eee' }}>{consent.previous_treatments ? `Sí — ${consent.previous_treatments_details || ''}` : 'No'}</td></tr>
+        </tbody>
+      </table>
+
+      <h2 style={{ fontSize: '13px', fontWeight: 'bold', textTransform: 'uppercase', color: '#be123c', margin: '0 0 10px' }}>3. Declaración y firma</h2>
+      <div style={{ background: '#fef2f2', border: '1px solid #fecdd3', borderRadius: '6px', padding: '12px', marginBottom: '16px', fontSize: '11px', fontStyle: 'italic' }}>
+        Declaro haber sido informada del procedimiento, riesgos y cuidados del tratamiento de micropigmentación. Autorizo voluntariamente su realización.
+      </div>
+
+      <div style={{ display: 'flex', gap: '40px', alignItems: 'flex-end', marginBottom: '24px' }}>
+        <div style={{ flex: 1 }}>
+          {consent.signature_data && (
+            <img src={consent.signature_data} alt="Firma" style={{ width: '100%', maxWidth: '280px', border: '1px solid #ddd', borderRadius: '4px' }} />
+          )}
+          <div style={{ borderTop: '1px solid #333', paddingTop: '6px', marginTop: '8px' }}>
+            <p style={{ margin: 0, fontSize: '12px' }}>{consent.client_name}</p>
+          </div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <p style={{ margin: '0 0 4px', fontSize: '12px', color: '#666' }}>Fecha y hora de firma:</p>
+          <p style={{ margin: '0 0 4px', fontWeight: '600' }}>{signedDate}</p>
+          <p style={{ margin: '0 0 2px', fontSize: '11px', color: '#166534' }}>✓ RGPD Art. 9 aceptado</p>
+          {consent.otp_verified && <p style={{ margin: 0, fontSize: '11px', color: '#1e40af' }}>✓ Identidad verificada por SMS</p>}
+        </div>
+      </div>
+
+      <h2 style={{ fontSize: '13px', fontWeight: 'bold', textTransform: 'uppercase', color: '#be123c', margin: '0 0 10px' }}>4. Auditoría digital</h2>
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '12px' }}>
+        <tbody>
+          <tr><td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', width: '35%', fontSize: '12px' }}>ID documento</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '10px', fontFamily: 'monospace' }}>{consent.token}</td></tr>
+          <tr><td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', fontSize: '12px' }}>IP de firma</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '11px' }}>{consent.ip_address || '—'}</td></tr>
+          <tr><td style={{ padding: '5px 8px', background: '#fef2f2', fontWeight: '600', fontSize: '12px' }}>Dispositivo</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #eee', fontSize: '10px', wordBreak: 'break-word' }}>{consent.user_agent || '—'}</td></tr>
+          <tr><td style={{ padding: '5px 8px', background: '#eff6ff', fontWeight: '600', fontSize: '12px', color: '#1e40af' }}>Verificación OTP SMS</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #dbeafe', fontSize: '11px', color: consent.otp_verified ? '#166534' : '#6b7280' }}>{consent.otp_verified ? `✓ Verificado — ${consent.otp_phone || ''} — ${consent.otp_verified_at ? new Date(consent.otp_verified_at).toLocaleString('es-ES') : ''}` : 'No aplicado'}</td></tr>
+          {consent.otp_provider_id && <tr><td style={{ padding: '5px 8px', background: '#eff6ff', fontWeight: '600', fontSize: '12px', color: '#1e40af' }}>ID mensaje SMS</td><td style={{ padding: '5px 8px', borderBottom: '1px solid #dbeafe', fontSize: '10px', fontFamily: 'monospace' }}>{consent.otp_provider_id}</td></tr>}
+        </tbody>
+      </table>
+
+      <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #eee', fontSize: '10px', color: '#999', textAlign: 'center' }}>
+        DermaFlow CRM · Firma Electrónica Avanzada · eIDAS (UE 910/2014) · LOPD/RGPD
+      </div>
     </div>
   )
 }
